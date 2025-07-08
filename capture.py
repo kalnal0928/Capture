@@ -5,14 +5,6 @@ from datetime import datetime
 import os
 import threading
 
-# PIL 라이브러리 선택적 import
-try:
-    from PIL import Image, ImageTk
-    PIL_AVAILABLE = True
-except ImportError:
-    PIL_AVAILABLE = False
-    print("PIL/Pillow가 설치되지 않았습니다. 영역 선택 기능이 제한될 수 있습니다.")
-
 # 모니터 정보를 위한 import
 try:
     import screeninfo
@@ -20,6 +12,17 @@ try:
 except ImportError:
     SCREENINFO_AVAILABLE = False
     print("screeninfo 패키지가 없습니다. pip install screeninfo로 설치하면 개별 모니터 캡쳐가 가능합니다.")
+
+# Windows API 사용을 위한 import
+try:
+    import win32gui
+    import win32api
+    import win32con
+    import win32ui
+    WIN32_AVAILABLE = True
+except ImportError:
+    WIN32_AVAILABLE = False
+    print("pywin32 패키지가 없습니다. pip install pywin32로 설치하면 더 정확한 모니터 감지가 가능합니다.")
 
 class RegionSelector:
     def __init__(self, parent_root, callback):
@@ -132,7 +135,7 @@ class ScreenCaptureApp:
     def __init__(self, root):
         self.root = root
         self.root.title("화면 캡쳐 프로그램")
-        self.root.geometry("450x500")
+        self.root.geometry("450x600")
         self.root.resizable(True, True)
         
         # 저장 폴더 설정 (기본값: 바탕화면)
@@ -151,12 +154,59 @@ class ScreenCaptureApp:
         """모니터 정보 가져오기"""
         monitors = []
         
-        if SCREENINFO_AVAILABLE:
+        # 방법 1: Windows API 사용 (가장 정확)
+        if WIN32_AVAILABLE:
+            try:
+                def enum_display_monitors():
+                    monitors_info = []
+                    
+                    def monitor_enum_proc(hMonitor, hdcMonitor, lprcMonitor, dwData):
+                        monitor_info = win32api.GetMonitorInfo(hMonitor)
+                        work_area = monitor_info['Work']
+                        monitor_area = monitor_info['Monitor']
+                        
+                        monitors_info.append({
+                            'handle': hMonitor,
+                            'x': monitor_area[0],
+                            'y': monitor_area[1],
+                            'width': monitor_area[2] - monitor_area[0],
+                            'height': monitor_area[3] - monitor_area[1],
+                            'is_primary': monitor_info['Flags'] == win32con.MONITORINFOF_PRIMARY
+                        })
+                        return True
+                    
+                    win32api.EnumDisplayMonitors(None, None, monitor_enum_proc, 0)
+                    return monitors_info
+                
+                win_monitors = enum_display_monitors()
+                print(f"Windows API로 감지된 모니터 수: {len(win_monitors)}")
+                
+                for i, mon in enumerate(win_monitors):
+                    monitor_info = {
+                        'index': i,
+                        'name': f"모니터 {i+1}",
+                        'x': mon['x'],
+                        'y': mon['y'],
+                        'width': mon['width'],
+                        'height': mon['height'],
+                        'is_primary': mon['is_primary'],
+                        'handle': mon['handle']
+                    }
+                    monitors.append(monitor_info)
+                    print(f"Windows API 모니터 {i+1}: {monitor_info}")
+                    
+            except Exception as e:
+                print(f"Windows API로 모니터 정보 가져오기 실패: {e}")
+        
+        # 방법 2: screeninfo 라이브러리 사용
+        if not monitors and SCREENINFO_AVAILABLE:
             try:
                 import screeninfo
                 screens = screeninfo.get_monitors()
+                print(f"screeninfo로 감지된 모니터 수: {len(screens)}")
+                
                 for i, screen in enumerate(screens):
-                    monitors.append({
+                    monitor_info = {
                         'index': i,
                         'name': f"모니터 {i+1}",
                         'x': screen.x,
@@ -164,24 +214,88 @@ class ScreenCaptureApp:
                         'width': screen.width,
                         'height': screen.height,
                         'is_primary': screen.is_primary
-                    })
+                    }
+                    monitors.append(monitor_info)
+                    print(f"screeninfo 모니터 {i+1}: {monitor_info}")
+                    
             except Exception as e:
-                print(f"모니터 정보 가져오기 실패: {e}")
+                print(f"screeninfo로 모니터 정보 가져오기 실패: {e}")
         
-        # screeninfo가 없거나 실패한 경우 기본 모니터 정보
+        # 방법 3: Tkinter API 사용 (대안)
         if not monitors:
-            screen_width = self.root.winfo_screenwidth()
-            screen_height = self.root.winfo_screenheight()
-            monitors.append({
-                'index': 0,
-                'name': "주 모니터",
-                'x': 0,
-                'y': 0,
-                'width': screen_width,
-                'height': screen_height,
-                'is_primary': True
-            })
+            try:
+                import tkinter as tk
+                temp_root = tk.Tk()
+                temp_root.withdraw()
+                
+                # 주 모니터 정보
+                screen_width = temp_root.winfo_screenwidth()
+                screen_height = temp_root.winfo_screenheight()
+                
+                # 가상 화면 크기 (멀티 모니터 포함)
+                virtual_width = temp_root.winfo_vrootwidth()
+                virtual_height = temp_root.winfo_vrootheight()
+                
+                temp_root.destroy()
+                
+                print(f"주 모니터 크기: {screen_width}x{screen_height}")
+                print(f"가상 화면 크기: {virtual_width}x{virtual_height}")
+                
+                # 주 모니터
+                monitors.append({
+                    'index': 0,
+                    'name': "모니터 1 (주)",
+                    'x': 0,
+                    'y': 0,
+                    'width': screen_width,
+                    'height': screen_height,
+                    'is_primary': True
+                })
+                
+                # 듀얼 모니터 추정 (가상 화면이 주 모니터보다 큰 경우)
+                if virtual_width > screen_width:
+                    second_width = virtual_width - screen_width
+                    monitors.append({
+                        'index': 1,
+                        'name': "모니터 2",
+                        'x': screen_width,  # 오른쪽에 위치 추정
+                        'y': 0,
+                        'width': second_width,
+                        'height': screen_height,
+                        'is_primary': False
+                    })
+                    print(f"추정된 두 번째 모니터: ({screen_width}, 0) - {second_width}x{screen_height}")
+                
+            except Exception as e:
+                print(f"Tkinter API 방식 실패: {e}")
         
+        # 기본값 (모든 방법이 실패한 경우)
+        if not monitors:
+            try:
+                screen_width = self.root.winfo_screenwidth()
+                screen_height = self.root.winfo_screenheight()
+                monitors.append({
+                    'index': 0,
+                    'name': "주 모니터",
+                    'x': 0,
+                    'y': 0,
+                    'width': screen_width,
+                    'height': screen_height,
+                    'is_primary': True
+                })
+            except:
+                # 최후의 수단
+                monitors.append({
+                    'index': 0,
+                    'name': "기본 모니터",
+                    'x': 0,
+                    'y': 0,
+                    'width': 1920,
+                    'height': 1080,
+                    'is_primary': True
+                })
+        
+        print(f"최종 모니터 정보: {monitors}")
         return monitors
 
     def setup_gui(self):
@@ -287,6 +401,18 @@ class ScreenCaptureApp:
                                    width=18, height=1)
         open_folder_btn.pack(pady=3, fill="x")
         
+        # 구분선
+        separator = tk.Frame(button_frame, height=1, bg="gray")
+        separator.pack(fill="x", pady=5)
+        
+        # 모니터 정보 확인 버튼 (디버깅용)
+        debug_btn = tk.Button(button_frame, text="🖥️ 모니터 정보 확인", 
+                             command=self.show_monitor_info,
+                             bg="#795548", fg="white", 
+                             font=("Arial", 9, "bold"),
+                             width=18, height=2)
+        debug_btn.pack(pady=5, fill="x")
+
     def select_save_folder(self):
         """저장 폴더 선택"""
         folder = filedialog.askdirectory(
@@ -576,40 +702,147 @@ class ScreenCaptureApp:
             self.root.deiconify()
     
     def _do_monitor_capture(self, monitor):
-        """실제 모니터 캡쳐 실행"""
         try:
-            # 파일 경로 생성
-            monitor_name = monitor['name'].replace(' ', '_').lower()
             filepath = self.generate_filename(f"monitor_{monitor['index']+1}")
-            
-            # 모니터 영역 캡쳐
-            screenshot = pyautogui.screenshot(region=(
-                monitor['x'], 
-                monitor['y'], 
-                monitor['width'], 
-                monitor['height']
-            ))
-            screenshot.save(filepath)
-            
-            # 창 다시 표시
-            self.root.deiconify()
-            
-            # 성공 메시지와 함께 파일 열기 옵션 제공
-            result = messagebox.askyesno("완료", 
-                                       f"{monitor['name']} 스크린샷이 저장되었습니다:\n"
-                                       f"파일: {filepath}\n"
-                                       f"크기: {monitor['width']}x{monitor['height']}\n\n"
-                                       f"파일을 열어보시겠습니까?")
-            if result:
-                os.startfile(filepath)
-            
+
+            # 1. BitBlt 방식 (가장 정확)
+            if WIN32_AVAILABLE and 'handle' in monitor:
+                try:
+                    import win32gui
+                    import win32ui
+                    import win32con
+                    import win32api
+                    from PIL import Image
+
+                    monitor_info = win32api.GetMonitorInfo(monitor['handle'])
+                    monitor_rect = monitor_info['Monitor']
+
+                    hwnd = win32gui.GetDesktopWindow()
+                    hwindc = win32gui.GetWindowDC(hwnd)
+                    srcdc = win32ui.CreateDCFromHandle(hwindc)
+                    memdc = srcdc.CreateCompatibleDC()
+
+                    width = monitor_rect[2] - monitor_rect[0]
+                    height = monitor_rect[3] - monitor_rect[1]
+                    print(f"BitBlt 좌표: {monitor_rect}, width: {width}, height: {height}")
+                    bmp = win32ui.CreateBitmap()
+                    bmp.CreateCompatibleBitmap(srcdc, width, height)
+                    memdc.SelectObject(bmp)
+
+                    result = memdc.BitBlt((0, 0), (width, height), srcdc, (monitor_rect[0], monitor_rect[1]), win32con.SRCCOPY)
+
+                    if result:
+                        bmpinfo = bmp.GetInfo()
+                        bmpstr = bmp.GetBitmapBits(True)
+                        img = Image.frombuffer('RGB', (bmpinfo['bmWidth'], bmpinfo['bmHeight']),
+                                              bmpstr, 'raw', 'BGRX', 0, 1)
+                        img.save(filepath)
+                        actual_size = img.size
+                        self.root.deiconify()
+                        result = messagebox.askyesno("완료", 
+                            f"{monitor['name']} 스크린샷이 저장되었습니다:\n"
+                            f"파일: {filepath}\n"
+                            f"크기: {actual_size[0]}x{actual_size[1]}\n"
+                            f"좌표: ({monitor['x']}, {monitor['y']})\n\n"
+                            f"파일을 열어보시겠습니까?")
+                        if result:
+                            os.startfile(filepath)
+                        # 리소스 해제
+                        memdc.DeleteDC()
+                        srcdc.DeleteDC()
+                        win32gui.ReleaseDC(hwnd, hwindc)
+                        win32gui.DeleteObject(bmp.GetHandle())
+                        return
+                    else:
+                        print("BitBlt 실패")
+                        memdc.DeleteDC()
+                        srcdc.DeleteDC()
+                        win32gui.ReleaseDC(hwnd, hwindc)
+                        win32gui.DeleteObject(bmp.GetHandle())
+                except Exception as api_error:
+                    print(f"Windows API BitBlt 방식 실패: {api_error}")
+                    messagebox.showerror("실패", f"{monitor['name']} 캡쳐에 BitBlt 예외 발생:\n{api_error}")
+                    self.root.deiconify()
+                    return
+
+            # 2. BitBlt가 실패하면 PIL ImageGrab fallback
+            try:
+                from PIL import ImageGrab
+                all_monitors = self.monitors
+                min_x = min(m['x'] for m in all_monitors)
+                min_y = min(m['y'] for m in all_monitors)
+                max_x = max(m['x'] + m['width'] for m in all_monitors)
+                max_y = max(m['y'] + m['height'] for m in all_monitors)
+
+                full_screenshot = ImageGrab.grab(all_screens=True)
+                img_width, img_height = full_screenshot.size
+                expected_width = max_x - min_x
+                expected_height = max_y - min_y
+
+                print(f"ImageGrab size: {img_width}x{img_height}, expected: {expected_width}x{expected_height}")
+
+                crop_left = monitor['x'] - min_x
+                crop_top = monitor['y'] - min_y
+                crop_right = crop_left + monitor['width']
+                crop_bottom = crop_top + monitor['height']
+
+                box = (crop_left, crop_top, crop_right, crop_bottom)
+                monitor_screenshot = full_screenshot.crop(box)
+                monitor_screenshot.save(filepath)
+                actual_size = monitor_screenshot.size
+
+                self.root.deiconify()
+                result = messagebox.askyesno("완료", 
+                    f"{monitor['name']} 스크린샷이 저장되었습니다:\n"
+                    f"파일: {filepath}\n"
+                    f"크기: {actual_size[0]}x{actual_size[1]}\n"
+                    f"좌표: ({monitor['x']}, {monitor['y']})\n\n"
+                    f"파일을 열어보시겠습니까?")
+                if result:
+                    os.startfile(filepath)
+                return
+            except Exception as e:
+                print(f"ImageGrab fallback 실패: {e}")
+                messagebox.showerror("실패", f"{monitor['name']} 캡쳐에 실패했습니다. (BitBlt & ImageGrab 실패)\n{e}")
+                self.root.deiconify()
+                return
+
         except Exception as e:
             self.root.deiconify()
+            print(f"모니터 캡쳐 전체 오류: {e}")
             messagebox.showerror("오류", f"모니터 캡쳐 중 오류가 발생했습니다: {str(e)}")
+
+    def show_monitor_info(self):
+        """모니터 정보를 팝업으로 표시"""
+        info_text = "현재 감지된 모니터 정보:\n\n"
+        
+        for monitor in self.monitors:
+            info_text += f"{monitor['name']}:\n"
+            info_text += f"  위치: ({monitor['x']}, {monitor['y']})\n"
+            info_text += f"  크기: {monitor['width']} x {monitor['height']}\n"
+            info_text += f"  주 모니터: {'예' if monitor['is_primary'] else '아니오'}\n"
+            info_text += f"  영역: ({monitor['x']}, {monitor['y']}) - "
+            info_text += f"({monitor['x'] + monitor['width']}, {monitor['y'] + monitor['height']})\n\n"
+        
+        # 전체 화면 정보
+        try:
+            virtual_width = self.root.winfo_vrootwidth()
+            virtual_height = self.root.winfo_vrootheight()
+            info_text += f"가상 화면 크기: {virtual_width} x {virtual_height}\n"
+        except:
+            pass
+        
+        messagebox.showinfo("모니터 정보", info_text)
 
 def main():
     # pyautogui 설정
     pyautogui.FAILSAFE = True  # 마우스를 화면 모서리로 이동하면 중단
+    
+    try:
+        import ctypes
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception as dpi_error:
+        print(f"DPI aware 설정 실패: {dpi_error}")
     
     # GUI 애플리케이션 실행
     root = tk.Tk()

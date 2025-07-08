@@ -1,3 +1,4 @@
 pyautogui>=0.9.50
 pillow>=8.0.0
 screeninfo>=0.8.1
+pywin32>=306
